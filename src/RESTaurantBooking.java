@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
+import java.sql.*;
 import com.sun.net.httpserver.*;
 
 
@@ -20,56 +21,92 @@ public class RESTaurantBooking {
     static List<Table> tables = new ArrayList<Table>();
     static List<Booking> bookings = new ArrayList<Booking>();
 
-    public static int randomNumberOfSeats() {
-        return (rng.nextInt(3) + 1) * 2;
-    }
-
-    public static int randomNumberOfPeople() {
-        return rng.nextInt(6)+1;
-    }
-
-    public static int randomNumberOfMinutes() {
-        return rng.nextInt(4)*15;
-    }
-
     public static void main(String[] args) {
+        
+        SqliteHandler.reloadTables();        
+        SqliteHandler.reloadBookings(); 
 
-        for(int i = 0; i < 25; i++) {
-            Table t = new Table(i, randomNumberOfSeats());
-            tables.add(t);
-        }   
+        HttpServer server;
+        try {
+            server = HttpServer.create(new InetSocketAddress(8080), 0);
+            server.createContext("/bookings", new ApiHandler());
+            server.setExecutor(null);
+            server.start();
+            System.out.println("Server started on port 8080...");
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
 
-        int failed = 0;
-        int total = 0;
+    public static boolean addBooking(int size, LocalTime time, String lastName) {
+        SqliteHandler.reloadTables(); 
+        SqliteHandler.reloadBookings(); 
 
-        for(int i = 0; i < 15; i++) {
-            for (int j = 9; j < 17; j++) {
-                boolean bookingFailed = true;
-                int count = 0;
-                while (bookingFailed && count < 5) {
-                    LocalTime bookingTime = LocalTime.of(j, randomNumberOfMinutes());
-                    Booking newBooking = new Booking(randomNumberOfPeople(), bookingTime);
-                    if(newBooking.tableID == -1) {
-                        count++;
-                        continue;
-                    }
-                    bookings.add(newBooking);
-                    bookingFailed = false;
-                    break;
-                }
-                if(bookingFailed) {
-                    failed++;
-                }
-                total++;
+        Booking booking = new Booking(size, time, lastName);
+
+        if(booking.tableID == 0) {
+            return false;
+        }
+
+        bookings.add(booking);
+
+        SqliteHandler.writeBooking(booking);
+
+        return true;
+    }
+
+    public static List<LocalTime> availableTimes(int size) {
+        List<LocalTime> availableTimes = new ArrayList<>();
+
+        LocalTime startTime = LocalTime.of(9, 0);
+        LocalTime endTime = LocalTime.of(17, 0);
+
+        for (LocalTime time = startTime; time.isBefore(endTime); time = time.plusMinutes(15)) {
+            if(tableAvailable(size, time)) {
+                availableTimes.add(time);
             }
         }
 
-        visualizeBookings();
+        return availableTimes;
     }
 
 
+    public static boolean tableAvailable(int size, LocalTime time) {
+        List<Integer> availableTables = new ArrayList<>();
+    
+        Map<Integer, List<Booking>> tableBookings = new HashMap<>();
+        for (Booking b : bookings) {
+            tableBookings.computeIfAbsent(b.tableID, k -> new ArrayList<>()).add(b);
+        }
+    
+        for (int i = 0; i < tables.size(); i++) {
+            if (tables.get(i).seats >= size) {
+                availableTables.add(i);
+            }
+        }
+    
+        for (int tableId : availableTables) {
+            List<Booking> tableBookingList = tableBookings.getOrDefault(tableId, new ArrayList<>());
+    
+            boolean isValidTable = true;
+            for (Booking existingBooking : tableBookingList) {
+                Duration duration = Duration.between(time, existingBooking.time);
+                if (duration.toMinutes() < 75) {
+                    isValidTable = false;
+                    break;
+                }
+            }
+    
+            if (isValidTable) {
+                return true;
+            }
+        }
+    
+        return false;
+    }
+
     public static int getBestTable(Booking booking) {
-        int bestTable = -1;
+        int bestTable = 0;
         int bestTimeGap = Integer.MAX_VALUE;
         int smallestSeatDifference = Integer.MAX_VALUE;
     
